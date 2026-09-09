@@ -2,7 +2,7 @@ use crate::models::AuthResponse;
 
 use chrono::{NaiveDateTime, Utc};
 
-use reqwest::blocking::Client;
+use reqwest::Client;
 use std::{env, fs, path::Path};
 use totp_rs::{Algorithm, Builder, Secret};
 use tracing::{error, info, warn};
@@ -39,7 +39,7 @@ impl Config {
         totp.generate_current().to_string()
     }
 
-    fn generate_access_token(&self) -> Result<AuthResponse, Box<dyn std::error::Error>> {
+    async fn generate_access_token(&self) -> Result<AuthResponse, Box<dyn std::error::Error>> {
         let current_totp = self.current_totp();
 
         let client = Client::builder()
@@ -54,10 +54,11 @@ impl Config {
                 ("totp", &current_totp),
             ])
             .header("Accept", "application/json")
-            .send()?;
+            .send()
+            .await?;
 
         let status = response.status();
-        let data = response.text()?;
+        let data = response.text().await?;
 
         if status.is_success() {
             let auth: AuthResponse = serde_json::from_str(&data)?;
@@ -67,7 +68,7 @@ impl Config {
         }
     }
 
-    fn get_access_token(&self) -> Result<AuthResponse, Box<dyn std::error::Error>> {
+    async fn get_access_token(&self) -> Result<AuthResponse, Box<dyn std::error::Error>> {
         // 1. Try cached auth.json
         if Path::new(AUTH_FILE).exists() {
             let contents = fs::read_to_string(AUTH_FILE)?;
@@ -91,7 +92,7 @@ impl Config {
         // 2. No cache -> generate new token
         info!("Generating new Dhan access token");
 
-        let auth = self.generate_access_token()?;
+        let auth = self.generate_access_token().await?;
 
         // 3. Persist auth response
         let json = serde_json::to_string_pretty(&auth)?;
@@ -102,9 +103,10 @@ impl Config {
     }
 }
 
-pub fn get_access_token() -> Result<(String, String), Box<dyn std::error::Error>> {
+pub async fn get_access_token() -> Result<(String, String), Box<dyn std::error::Error>> {
     Config::from_env()
         .get_access_token()
+        .await
         .map(|auth| {
             info!("Successfully authenticated with Dhan");
             (auth.access_token, auth.dhan_client_id)
