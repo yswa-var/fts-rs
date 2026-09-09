@@ -1,44 +1,28 @@
-use std::env;
+mod auth;
+mod master;
+mod models;
+mod quote;
 
-use totp_rs::{Algorithm, Builder, Secret};
+use auth::get_access_token;
+// use master::get_master;
+use serde_json::json;
+// use tracing::info;
 
-#[derive(Debug)]
-struct Config {
-    client_id: String,
-    totp_key: String,
-    dpin: String,
-}
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt().with_env_filter("info").init();
 
-impl Config {
-    fn from_env() -> Self {
-        dotenvy::dotenv().ok();
+    let (access_token, client_id) = get_access_token()?;
+    // get_master()?;
 
-        Self {
-            client_id: env::var("CLIENT_ID").expect("CLIENT_ID is missing"),
-            totp_key: env::var("TOTP_KEY").expect("TOTP_KEY is missing"),
-            dpin: env::var("DPIN").expect("DPIN is missing"),
-        }
-    }
+    let payload = json!({
+        "NSE_EQ": [11536, 1038],
+        "BSE_EQ": [532540]
+    });
 
-    fn current_totp(&self) -> String {
-        let secret = Secret::try_from_base32(&self.totp_key).expect("Invalid TOTP secret");
+    let quote_response = quote::get_quote(&access_token, &client_id, &payload).await?;
 
-        let totp = Builder::new()
-            .with_secret(secret)
-            .with_algorithm(Algorithm::SHA1)
-            .build()
-            .expect("Failed to build TOTP");
+    println!("{:#?}", quote_response);
 
-        totp.generate_current().to_string()
-    }
-}
-
-fn main() {
-    let config = Config::from_env();
-
-    println!("{:#?}", config);
-
-    let totp = config.current_totp();
-
-    println!("TOTP: {}", totp)
+    Ok(())
 }
