@@ -29,12 +29,11 @@ pub struct Quote {
 }
 
 pub async fn get_quote(
+    client: &Client,
     access_token: &str,
     client_id: &str,
     payload: &Value,
 ) -> Result<QuoteResponse, Box<dyn std::error::Error>> {
-    let client = Client::new();
-
     let response = client
         .post("https://api.dhan.co/v2/marketfeed/quote")
         .header("Content-Type", "application/json")
