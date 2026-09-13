@@ -1,15 +1,18 @@
 mod auth;
+mod feed;
 mod hdata;
 mod master;
 mod models;
 mod quote;
-mod feed;
 
 use auth::get_access_token;
+use feed::{Instrument, Subscription};
 use hdata::{Symbol, fetch_symbols};
 use reqwest::Client;
 use serde_json::json;
-use feed::{Instrument, Subscription};
+
+const MCX: &str = "MCX_COMM";
+const NSEEQ: &str = "NSE_EQ";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -36,30 +39,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // fetch_symbols(&client, &access_token, &symbols).await?;
 
-
     let subscription = Subscription {
-        request_code: 15,
-        instrument_count: 3,
+        request_code: 21,
+        instrument_count: 4,
         instrument_list: vec![
             Instrument {
-                exchange_segment: "NSE_EQ".into(),
-                security_id: "18143".into(),
+                exchange_segment: NSEEQ.into(),
+                security_id: "2475".into(),
             },
             Instrument {
-                exchange_segment: "NSE_EQ".into(),
-                security_id: "21740".into(),
+                exchange_segment: NSEEQ.into(),
+                security_id: "3787".into(),
             },
             Instrument {
-                exchange_segment: "NSE_EQ".into(),
-                security_id: "13611".into(),
+                exchange_segment: NSEEQ.into(),
+                security_id: "1624".into(),
+            },
+            Instrument {
+                exchange_segment: NSEEQ.into(),
+                security_id: "4668".into(),
             },
         ],
     };
 
-    feed::run_feed(
-        &access_token,
-        &client_id,
-        subscription,
-    ).await?;
+    feed::run(&access_token, &client_id, subscription).await?;
     Ok(())
 }
