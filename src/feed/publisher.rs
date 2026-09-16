@@ -1,16 +1,26 @@
-use redis::AsyncCommands;
-
-use super::models::{DepthLevel, FullPacket, TickerPacket};
+use super::models::FullPacket;
 
 pub struct RedisPublisher {
     client: redis::Client,
+    ticks_maxlen: usize,
 }
 
 impl RedisPublisher {
     pub fn new(redis_url: &str) -> redis::RedisResult<Self> {
         let client = redis::Client::open(redis_url)?;
+        // Keep Redis as a bounded replay buffer rather than an unbounded tick archive.
+        // Override this based on the observed peak tick rate and desired recovery window:
+        // peak_ticks_per_second * recovery_window_seconds * 1.25.
+        let ticks_maxlen = std::env::var("TICKS_MAXLEN")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(750_000);
 
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            ticks_maxlen,
+        })
     }
 
     pub async fn publish_full(&self, tick: &FullPacket) -> redis::RedisResult<()> {
@@ -75,6 +85,9 @@ impl RedisPublisher {
 
         let _: String = redis::cmd("XADD")
             .arg(&stream)
+            .arg("MAXLEN")
+            .arg("~")
+            .arg(self.ticks_maxlen)
             .arg("*")
             .arg(args)
             .query_async(&mut connection)

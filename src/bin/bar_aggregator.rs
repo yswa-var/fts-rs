@@ -1,12 +1,18 @@
 #[path = "../bar_aggregator/mod.rs"]
 mod bar_aggregator;
 
-use bar_aggregator::{BarAggregator, Tick};
+use bar_aggregator::{BarAggregator, ClickHouseWriter, StoredBar, Tick};
 use redis::AsyncCommands;
 use redis::streams::{StreamReadOptions, StreamReadReply};
 
 #[tokio::main]
 async fn main() -> redis::RedisResult<()> {
+    dotenvy::dotenv().ok();
+    let bar_sender = ClickHouseWriter::start_from_env()
+        .await
+        .map_err(clickhouse_error)?;
+    println!("ClickHouse batch writer started and bars_1m is ready");
+
     let client = redis::Client::open("redis://127.0.0.1/")?;
     let mut connection = client.get_multiplexed_async_connection().await?;
 
@@ -43,7 +49,14 @@ async fn main() -> redis::RedisResult<()> {
                 match Tick::from_stream_entry(&entry.map) {
                     Ok(tick) => {
                         if let Some(bar) = aggregator.on_tick(tick) {
-                            println!("CANDLE {bar:#?}");
+                            // println!("CANDLE {bar:#?}");
+                            let row = StoredBar::try_from(bar).map_err(clickhouse_error)?;
+                            bar_sender.send(row).await.map_err(|_| {
+                                redis::RedisError::from((
+                                    redis::ErrorKind::Io,
+                                    "ClickHouse writer stopped",
+                                ))
+                            })?;
                         }
                     }
                     Err(error) => eprintln!("Skipping malformed tick {}: {error}", entry.id),
@@ -52,4 +65,12 @@ async fn main() -> redis::RedisResult<()> {
             }
         }
     }
+}
+
+fn clickhouse_error(error: Box<dyn std::error::Error + Send + Sync>) -> redis::RedisError {
+    redis::RedisError::from((
+        redis::ErrorKind::Io,
+        "ClickHouse operation failed",
+        error.to_string(),
+    ))
 }
