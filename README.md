@@ -2,10 +2,9 @@ quest completed:
 - Dhan auth
 - quote feacther
 - historical loader
-
-quest remaning:
 - Live web socket
-- NATS jetStream
+- jetStream
+quest remaning:
 - Bar Aggregator
 - Click House connector 
 - Analytics api
@@ -13,15 +12,19 @@ quest remaning:
 
 redis
 ```
-docker run --name redis -p 6379:6379 redis:latest
+
+docker rm redis
+docker run -d --name redis -p 6379:6379 redis:latest
+ docker exec redis redis-cli
+ docker exec -it redis redis-cli FLUSHALL
 ```
 Main feed producer
 
 This is your Dhan → parser → Redis process:
-
-cargo run --bin fts-rs
-subscriber
-
+```
+cargo run 
+```
 In another terminal:
-
+```
 cargo run --bin tick_subscriber
+```

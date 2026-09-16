@@ -16,7 +16,7 @@ impl RedisPublisher {
     pub async fn publish_full(&self, tick: &FullPacket) -> redis::RedisResult<()> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
 
-        let stream = format!("tick:{}", tick.security_id);
+        let stream = "ticks";
 
         let mut args: Vec<String> = vec![
             "security_id".into(),
