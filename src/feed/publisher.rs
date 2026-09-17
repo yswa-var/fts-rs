@@ -1,11 +1,19 @@
 use super::models::FullPacket;
 
+/// Appends decoded full-depth ticks to the Redis `ticks` stream.
+///
+/// The stream is deliberately capped to retain a recent replay window without
+/// allowing high-volume market data to grow Redis without bound.
 pub struct RedisPublisher {
     client: redis::Client,
     ticks_maxlen: usize,
 }
 
 impl RedisPublisher {
+    /// Creates a publisher and reads the optional Redis stream retention limit.
+    ///
+    /// `TICKS_MAXLEN` controls the approximate maximum stream length; the
+    /// default retains 750,000 ticks.
     pub fn new(redis_url: &str) -> redis::RedisResult<Self> {
         let client = redis::Client::open(redis_url)?;
         // Keep Redis as a bounded replay buffer rather than an unbounded tick archive.
@@ -23,6 +31,10 @@ impl RedisPublisher {
         })
     }
 
+    /// Serializes a full-depth tick as Redis stream fields and appends it.
+    ///
+    /// Each depth level is flattened into named fields so consumers can read
+    /// individual price and quantity values without decoding another payload.
     pub async fn publish_full(&self, tick: &FullPacket) -> redis::RedisResult<()> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
 

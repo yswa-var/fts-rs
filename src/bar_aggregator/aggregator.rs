@@ -1,31 +1,47 @@
-use super::{Tick, models::Bar1m};
+use super::{models::Bar1m, Tick};
 use std::collections::HashMap;
 
 type Instrument = (i32, u8);
 
+/// The in-progress bar plus the unrounded value needed to calculate VWAP.
 #[derive(Debug)]
 struct WorkingBar {
     bar: Bar1m,
     volume_value: f64,
 }
 
+/// Per-instrument state retained while live ticks are aggregated.
+///
+/// Cumulative volume is tracked separately so each incoming tick can be
+/// converted into its incremental contribution to the current bar.
 #[derive(Debug, Default)]
 struct InstrumentState {
     previous_volume: Option<i64>,
     current: Option<WorkingBar>,
 }
 
+/// Builds independent one-minute OHLCV and microstructure bars per instrument.
+///
+/// Each instrument is keyed by its security ID and exchange segment, allowing
+/// interleaved ticks from the Redis stream to be aggregated safely in one
+/// consumer.
 #[derive(Debug, Default)]
 pub struct BarAggregator {
     instruments: HashMap<Instrument, InstrumentState>,
 }
 
 impl BarAggregator {
+    /// Creates an empty aggregator with no active instrument windows.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Adds one tick and returns a completed candle when the tick starts a new minute.
+    /// Incorporates a live tick and returns the preceding bar at a minute boundary.
+    ///
+    /// Minute boundaries are based on Dhan's last-trade time rather than local
+    /// arrival time. Ticks for an already-open minute update its OHLCV and
+    /// market-depth fields; late ticks from older minutes are ignored so a
+    /// finalized bar is never rewritten.
     pub fn on_tick(&mut self, tick: Tick) -> Option<Bar1m> {
         let instrument = (tick.security_id, tick.exchange_segment);
         let state = self.instruments.entry(instrument).or_default();
@@ -126,6 +142,7 @@ impl BarAggregator {
     }
 }
 
+/// Finalizes calculated fields before releasing a completed bar.
 fn finish(mut working: WorkingBar) -> Bar1m {
     working.bar.avg_trade_size = if working.bar.trade_count == 0 {
         0.0
@@ -135,10 +152,15 @@ fn finish(mut working: WorkingBar) -> Bar1m {
     working.bar
 }
 
+/// Rounds an exchange timestamp down to its UTC minute boundary.
 fn minute_start(ltt: i64) -> i64 {
     ltt.div_euclid(60) * 60
 }
 
+/// Converts a cumulative exchange volume counter into a per-tick increment.
+///
+/// If the counter moves backwards (for example, after an exchange reset), the
+/// reported last-trade quantity is used as a safe fallback.
 fn cumulative_delta(previous: &mut Option<i64>, value: i64, fallback: i64) -> i64 {
     let delta = previous.map_or(fallback.max(0), |old| {
         if value >= old {
@@ -151,6 +173,7 @@ fn cumulative_delta(previous: &mut Option<i64>, value: i64, fallback: i64) -> i6
     delta
 }
 
+/// Calculates normalized buy-versus-sell pressure, returning zero when empty.
 fn imbalance(buy: i64, sell: i64) -> f32 {
     let total = buy + sell;
     if total == 0 {

@@ -1,6 +1,10 @@
-use redis::{RedisResult, Value, from_redis_value};
+use redis::{from_redis_value, RedisResult, Value};
 use std::collections::HashMap;
 
+/// The subset of a Redis `ticks` stream entry needed to construct a live bar.
+///
+/// Values are decoded from the string-backed Redis fields produced by the feed
+/// publisher, with unavailable top-of-book fields defaulting to zero.
 #[derive(Debug, Clone)]
 pub struct Tick {
     pub security_id: i32,
@@ -20,6 +24,10 @@ pub struct Tick {
 }
 
 impl Tick {
+    /// Decodes one Redis stream entry into the normalized tick used by the aggregator.
+    ///
+    /// Core trade and instrument fields are required; malformed or missing
+    /// values fail conversion, while optional level-one depth values default.
     pub fn from_stream_entry(fields: &HashMap<String, Value>) -> RedisResult<Self> {
         Ok(Self {
             security_id: required(fields, "security_id")?,
@@ -40,6 +48,7 @@ impl Tick {
     }
 }
 
+/// Reads a required, typed field and reports a Redis-style conversion error.
 fn required<T: redis::FromRedisValue>(
     fields: &HashMap<String, Value>,
     name: &str,
@@ -56,6 +65,7 @@ fn required<T: redis::FromRedisValue>(
     )
 }
 
+/// Reads an optional typed field, substituting its type's default on failure.
 fn optional<T: redis::FromRedisValue + Default>(fields: &HashMap<String, Value>, name: &str) -> T {
     fields
         .get(name)

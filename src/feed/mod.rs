@@ -1,3 +1,8 @@
+//! Dhan WebSocket ingestion pipeline.
+//!
+//! This module connects to Dhan, subscribes to instruments, decodes binary
+//! market-data packets, and appends the resulting ticks to Redis.
+
 pub mod client;
 pub mod models;
 pub mod parser;

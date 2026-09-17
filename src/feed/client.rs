@@ -8,6 +8,12 @@ use tracing::{error, info};
 
 use super::{models::Subscription, parser::parse_full, publisher::RedisPublisher, reconnect};
 
+/// Runs the resilient Dhan-to-Redis ingestion loop.
+///
+/// The loop establishes an authenticated WebSocket connection, subscribes to
+/// the requested instruments, processes incoming market-data frames, and
+/// reconnects with backoff whenever the feed ends or a connection fails. It is
+/// intended to run for the lifetime of the feed process.
 pub async fn run(
     access_token: &str,
     client_id: &str,
@@ -32,6 +38,7 @@ pub async fn run(
                 attempt = 0;
 
                 subscribe(&mut ws, &subscription).await?;
+                info!("Starting receive loop");
 
                 if let Err(error) = receive_messages(&mut ws, &publisher).await {
                     error!("Feed error: {error}");
@@ -52,6 +59,11 @@ pub async fn run(
         sleep(delay).await;
     }
 }
+/// Opens a TLS WebSocket connection to Dhan using an IPv4 address.
+///
+/// Resolving and dialing IPv4 explicitly avoids an unavailable IPv6 route from
+/// stalling feed startup. Both the TCP and WebSocket handshakes are bounded by
+/// short timeouts so the outer loop can retry promptly.
 async fn connect(
     url: &str,
 ) -> Result<
@@ -82,24 +94,54 @@ async fn connect(
 
     Ok(ws)
 }
+
+/// Sends the requested instrument subscription in Dhan-sized batches.
+///
+/// Dhan accepts at most 100 instruments per request, so a large subscription
+/// is split into independent messages while preserving its request code.
 async fn subscribe(
     ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
     subscription: &Subscription,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let message = serde_json::to_string(subscription)?;
+    for instruments in subscription.instrument_list.chunks(100) {
+        let chunk = Subscription {
+            request_code: subscription.request_code,
+            instrument_count: instruments.len(),
+            instrument_list: instruments.to_vec(),
+        };
 
-    ws.send(Message::Text(message.into())).await?;
+        let message = serde_json::to_string(&chunk)?;
 
-    info!("Subscribed to feed");
+        ws.send(Message::Text(message.into())).await?;
+    }
+
+    info!(
+        "Subscribed {} instruments in {} request(s)",
+        subscription.instrument_list.len(),
+        subscription.instrument_list.len().div_ceil(100)
+    );
 
     Ok(())
 }
+
+/// Receives WebSocket frames until the feed closes or returns an error.
+///
+/// Binary frames are passed through the decode-and-publish path, while ping
+/// frames are answered to keep the connection alive. A clean close returns to
+/// the caller so the outer run loop can reconnect.
 async fn receive_messages(
     ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
     publisher: &RedisPublisher,
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         match ws.next().await {
+            // Some(Ok(Message::Binary(data))) => {
+            //     info!("Received binary frame: {} bytes", data.len());
+
+            //     if let Err(error) = handle_binary_message(&data, publisher).await {
+            //         error!("Failed to process tick: {error}");
+            //     }
+            // }
             Some(Ok(Message::Binary(data))) => {
                 if let Err(error) = handle_binary_message(&data, publisher).await {
                     error!("Failed to process tick: {error}");
@@ -132,6 +174,10 @@ async fn receive_messages(
 
     Ok(())
 }
+/// Decodes one full-depth Dhan packet and appends it to the Redis tick stream.
+///
+/// Parse or Redis failures are returned to the receive loop, which logs the
+/// bad frame and continues consuming later ticks when possible.
 async fn handle_binary_message(
     data: &[u8],
     publisher: &RedisPublisher,

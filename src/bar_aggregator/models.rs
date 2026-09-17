@@ -1,3 +1,7 @@
+/// A completed one-minute bar derived from exchange-event-time live ticks.
+///
+/// Alongside OHLCV, each bar preserves end-of-minute order-flow, top-of-book,
+/// depth, and open-interest signals for downstream analytics.
 #[derive(Debug, Clone)]
 pub struct Bar1m {
     pub security_id: i32,

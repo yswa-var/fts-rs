@@ -6,13 +6,12 @@ mod models;
 mod quote;
 
 use auth::get_access_token;
-use feed::{Instrument, Subscription};
+use feed::Subscription;
 use hdata::{Symbol, fetch_symbols};
 use reqwest::Client;
 use serde_json::json;
 
 const MCX: &str = "MCX_COMM";
-const NSEEQ: &str = "NSE_EQ";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -39,27 +38,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // fetch_symbols(&client, &access_token, &symbols).await?;
 
+    let instruments = master::instruments_for_tag("FNO")?;
+    if instruments.is_empty() {
+        return Err("no instruments found for tag FNO".into());
+    }
+
     let subscription = Subscription {
         request_code: 21,
-        instrument_count: 4,
-        instrument_list: vec![
-            Instrument {
-                exchange_segment: NSEEQ.into(),
-                security_id: "1333".into(),
-            },
-            Instrument {
-                exchange_segment: NSEEQ.into(),
-                security_id: "3045".into(),
-            },
-            Instrument {
-                exchange_segment: NSEEQ.into(),
-                security_id: "4963".into(),
-            },
-            Instrument {
-                exchange_segment: NSEEQ.into(),
-                security_id: "2885".into(),
-            },
-        ],
+        instrument_count: instruments.len(),
+        instrument_list: instruments,
     };
 
     feed::run(&access_token, &client_id, subscription).await?;

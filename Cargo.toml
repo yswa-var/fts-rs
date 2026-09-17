@@ -7,6 +7,7 @@ default-run = "fts-rs"
 [dependencies]
 dotenvy = "0.15.7"
 chrono = "0.4"
+csv = "1"
 totp-rs = { version = "6.0.0", features = ["otpauth"] }
 reqwest = { version = "0.13.4", features = ["blocking", "query", "json"] }
 tracing = "0.1"

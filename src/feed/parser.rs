@@ -2,6 +2,10 @@ use std::convert::TryInto;
 
 use super::models::{DepthLevel, FullPacket, TickerPacket};
 
+/// Decodes Dhan's compact ticker packet from its little-endian binary frame.
+///
+/// The caller receives an error instead of a partial packet when the frame is
+/// shorter than the fixed header required for ticker data.
 pub fn parse_ticker(data: &[u8]) -> Result<TickerPacket, String> {
     if data.len() < 16 {
         return Err(format!("ticker packet too short: {} bytes", data.len()));
@@ -33,6 +37,10 @@ pub fn parse_ticker(data: &[u8]) -> Result<TickerPacket, String> {
     })
 }
 
+/// Decodes Dhan's full market-depth packet into a typed tick.
+///
+/// Validates the response type and minimum frame size before extracting quote,
+/// session, open-interest, and five-level order-book fields.
 pub fn parse_full(data: &[u8]) -> Result<FullPacket, String> {
     const FULL_PACKET_SIZE: usize = 162;
 

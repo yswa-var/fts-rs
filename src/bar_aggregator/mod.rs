@@ -1,3 +1,9 @@
+//! One-minute bar construction and persistence for live Dhan ticks.
+//!
+//! The aggregator converts Redis stream entries into typed ticks, groups each
+//! instrument's ticks by exchange-event minute, and sends completed bars to
+//! ClickHouse through a buffered writer.
+
 mod aggregator;
 mod clickhouse;
 mod models;

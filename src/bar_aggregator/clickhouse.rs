@@ -33,6 +33,7 @@ ENGINE = ReplacingMergeTree
 ORDER BY (security_id, exchange_segment, ts)
 "#;
 
+/// Indicates whether a stored bar came from historical backfill or the live feed.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BarSource {
@@ -67,6 +68,10 @@ pub struct StoredBar {
 
 impl StoredBar {
     #[allow(dead_code)]
+    /// Creates a storage row for a historical OHLCV bar.
+    ///
+    /// Historical data does not provide the live microstructure fields, so they
+    /// are deliberately represented as `NULL` in ClickHouse.
     pub fn historical(
         security_id: i32,
         exchange_segment: u8,
@@ -104,6 +109,7 @@ impl StoredBar {
 impl TryFrom<Bar1m> for StoredBar {
     type Error = ClickHouseError;
 
+    /// Converts a completed live bar into ClickHouse's JSON-row representation.
     fn try_from(bar: Bar1m) -> Result<Self, Self::Error> {
         Ok(Self {
             security_id: bar.security_id,
@@ -129,6 +135,10 @@ impl TryFrom<Bar1m> for StoredBar {
     }
 }
 
+/// Buffers storage rows and writes them to ClickHouse in durable batches.
+///
+/// The writer owns the receiving side of a Tokio channel so aggregation can
+/// continue while database I/O is batched and retried in the background.
 pub struct ClickHouseWriter {
     client: ClickHouse,
     receiver: mpsc::Receiver<StoredBar>,
@@ -137,6 +147,11 @@ pub struct ClickHouseWriter {
 }
 
 impl ClickHouseWriter {
+    /// Starts the background writer using the configured ClickHouse environment.
+    ///
+    /// Returns the sender used by the live pipeline. Batch size, channel
+    /// capacity, and flush interval may be configured with `CLICKHOUSE_*`
+    /// environment variables.
     pub async fn start_from_env() -> Result<mpsc::Sender<StoredBar>, ClickHouseError> {
         let batch_size = env_usize("CLICKHOUSE_BATCH_SIZE", 1_000).clamp(500, 5_000);
         let channel_capacity = env_usize("CLICKHOUSE_CHANNEL_CAPACITY", 5_000).max(batch_size);
@@ -156,6 +171,7 @@ impl ClickHouseWriter {
         Ok(sender)
     }
 
+    /// Drains bars from the channel, flushing by size, interval, or shutdown.
     async fn run(mut self) {
         let mut batch = Vec::with_capacity(self.batch_size);
         let mut flush_timer = tokio::time::interval(self.flush_interval);
@@ -184,6 +200,10 @@ impl ClickHouseWriter {
         }
     }
 
+    /// Persists a batch, retrying indefinitely with capped exponential backoff.
+    ///
+    /// The batch remains intact until ClickHouse acknowledges it, preventing a
+    /// transient database failure from silently dropping completed bars.
     async fn flush_with_retry(&self, batch: &mut Vec<StoredBar>) {
         let mut retry_delay = Duration::from_secs(1);
 
@@ -207,6 +227,7 @@ impl ClickHouseWriter {
     }
 }
 
+/// Minimal HTTP client for schema setup and JSONEachRow batch inserts.
 struct ClickHouse {
     client: Client,
     url: String,
@@ -216,6 +237,7 @@ struct ClickHouse {
 }
 
 impl ClickHouse {
+    /// Loads connection settings, ensures the target table exists, and connects.
     async fn connect() -> Result<Self, ClickHouseError> {
         let clickhouse = Self {
             client: Client::new(),
@@ -231,6 +253,7 @@ impl ClickHouse {
         Ok(clickhouse)
     }
 
+    /// Encodes a non-empty batch as ClickHouse `JSONEachRow` and inserts it.
     async fn insert_batch(&self, bars: &[StoredBar]) -> Result<(), ClickHouseError> {
         if bars.is_empty() {
             return Ok(());
@@ -244,6 +267,7 @@ impl ClickHouse {
         self.execute(query).await
     }
 
+    /// Sends a SQL statement to the configured ClickHouse HTTP endpoint.
     async fn execute(&self, query: String) -> Result<(), ClickHouseError> {
         let response = self
             .client
@@ -262,6 +286,7 @@ impl ClickHouse {
     }
 }
 
+/// Converts a Unix-seconds bar boundary into ClickHouse's UTC datetime format.
 fn format_timestamp(ts: i64) -> Result<String, ClickHouseError> {
     Ok(DateTime::<Utc>::from_timestamp(ts, 0)
         .ok_or_else(|| format!("invalid bar timestamp: {ts}"))?
@@ -269,6 +294,7 @@ fn format_timestamp(ts: i64) -> Result<String, ClickHouseError> {
         .to_string())
 }
 
+/// Reads a size setting from the environment, falling back on invalid input.
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
         .ok()
@@ -276,6 +302,7 @@ fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+/// Reads an unsigned duration setting from the environment, with a safe default.
 fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name)
         .ok()
