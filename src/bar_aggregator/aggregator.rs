@@ -1,4 +1,4 @@
-use super::{models::Bar1m, Tick};
+use super::{Tick, models::Bar1m};
 use std::collections::HashMap;
 
 type Instrument = (i32, u8);

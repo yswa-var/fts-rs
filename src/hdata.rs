@@ -1,17 +1,24 @@
 use chrono::{Duration, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path};
+use std::fs;
 use tokio::time::{Duration as TokioDuration, sleep};
 
-const HISTORICAL_URL: &str = "https://api.dhan.co/v2/charts/historical";
+const DAILY_URL: &str = "https://api.dhan.co/v2/charts/historical";
+const INTRADAY_URL: &str = "https://api.dhan.co/v2/charts/intraday";
 
 #[derive(Debug, Clone)]
 pub struct Symbol {
-    pub name: &'static str,
-    pub security_id: &'static str,
-    pub exchange_segment: &'static str,
-    pub instrument: &'static str,
+    pub name: String,
+    pub security_id: String,
+    pub exchange_segment: String,
+    pub instrument: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Timeframe {
+    OneMinute,
+    Daily,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,18 +52,72 @@ pub async fn get_historical(
     from_date: &str,
     to_date: &str,
 ) -> Result<Vec<Candle>, Box<dyn std::error::Error>> {
-    let payload = serde_json::json!({
-        "securityId": symbol.security_id,
-        "exchangeSegment": symbol.exchange_segment,
-        "instrument": symbol.instrument,
-        "expiryCode": 0,
-        "oi": false,
-        "fromDate": from_date,
-        "toDate": to_date,
-    });
+    get_candles(
+        client,
+        access_token,
+        symbol,
+        from_date,
+        to_date,
+        Timeframe::Daily,
+    )
+    .await
+}
+
+pub async fn get_intraday(
+    client: &Client,
+    access_token: &str,
+    symbol: &Symbol,
+    from_date: &str,
+    to_date: &str,
+) -> Result<Vec<Candle>, Box<dyn std::error::Error>> {
+    get_candles(
+        client,
+        access_token,
+        symbol,
+        from_date,
+        to_date,
+        Timeframe::OneMinute,
+    )
+    .await
+}
+
+async fn get_candles(
+    client: &Client,
+    access_token: &str,
+    symbol: &Symbol,
+    from_date: &str,
+    to_date: &str,
+    timeframe: Timeframe,
+) -> Result<Vec<Candle>, Box<dyn std::error::Error>> {
+    let (url, payload) = match timeframe {
+        Timeframe::Daily => (
+            DAILY_URL,
+            serde_json::json!({
+                "securityId": symbol.security_id,
+                "exchangeSegment": symbol.exchange_segment,
+                "instrument": symbol.instrument,
+                "expiryCode": 0,
+                "oi": false,
+                "fromDate": from_date,
+                "toDate": to_date,
+            }),
+        ),
+        Timeframe::OneMinute => (
+            INTRADAY_URL,
+            serde_json::json!({
+                "securityId": symbol.security_id,
+                "exchangeSegment": symbol.exchange_segment,
+                "instrument": symbol.instrument,
+                "interval": "1",
+                "oi": false,
+                "fromDate": from_date,
+                "toDate": to_date,
+            }),
+        ),
+    };
 
     let response = client
-        .post(HISTORICAL_URL)
+        .post(url)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")
         .header("access-token", access_token)

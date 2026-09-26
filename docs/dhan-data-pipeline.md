@@ -1,195 +1,115 @@
-# Dhan Data Pipeline
+# Dhan Market Data Pipeline
 
-## Purpose
+## Executive summary
 
-This project is a Rust-based ingestion layer for Dhan market data. It currently supports:
+This pipeline turns Dhan market data into two products:
 
-- Historical daily candle downloads through Dhan's REST API.
-- Live full-market-data ticks through Dhan's WebSocket feed.
-- Durable-enough local fan-out of live ticks through Redis Streams.
-- Downloading Dhan's scrip master file for instrument metadata and security-ID lookup.
+1. A bounded, replayable stream of normalized live ticks for short-horizon consumers.
+2. Enriched one-minute bars in ClickHouse for research, analytics, and downstream serving.
 
-The intended downstream pipeline is:
+Instrument master data and historical daily candles support discovery and backfill. They are intentionally separate from the low-latency live path.
 
-```text
-Dhan APIs
-   ├── Historical REST API ──> hdata.rs ──> data/<symbol>_daily.json
-   ├── Scrip master CSV ────> master.rs ──> master.csv
-   └── Live WebSocket ──────> feed/ ──────> Redis Streams ──> consumers
-                                                        └─> future aggregators,
-                                                            storage, analytics
-```
+The design favors a small, local operational footprint and rapid iteration over multi-region availability or permanent raw-tick retention. Redis is a transport and recovery buffer; ClickHouse is the analytical destination for completed bars.
 
-## Startup and authentication
-
-`main.rs` is the current application entry point. It obtains a Dhan access token and client ID through `auth.rs`, then starts the live feed with a hard-coded subscription.
-
-Authentication uses `CLIENT_ID`, `TOTP_KEY`, and `DPIN` from the environment or `.env`. A successful authentication response is cached in `auth.json` and reused until its Dhan-provided expiry time. The access token is required by both the historical REST request and the WebSocket connection.
-
-`master.rs` is a separate synchronous utility. It downloads Dhan's detailed scrip master CSV from the Dhan data endpoint and overwrites `master.csv`. This file is the reference source for resolving exchange segments, security IDs, instruments, and other instrument metadata before constructing subscriptions or historical requests.
-
-## Historical data path: `hdata.rs`
-
-`hdata.rs` provides the batch/backfill path for daily candles.
-
-### Input
-
-Each requested symbol is represented by a `Symbol` containing:
-
-- A local output name.
-- Dhan `security_id`.
-- Dhan `exchange_segment`.
-- Dhan `instrument` type.
-
-`fetch_symbols` currently chooses a rolling six-month date range ending on the current UTC date. It creates the `data/` directory and processes symbols sequentially, waiting 500 ms between requests.
-
-### Dhan request
-
-`get_historical` posts to Dhan's `/v2/charts/historical` endpoint. The request includes the security ID, exchange segment, instrument, date range, and chart options. The response is an array-oriented JSON object: each OHLCV field is a separate array indexed by timestamp.
-
-### Normalization and output
-
-The response is converted into a vector of `Candle` records. The effective record count is the shortest of the required arrays, which prevents out-of-bounds access when Dhan returns uneven data. Missing open-interest values default to zero.
-
-Each symbol is serialized as pretty-printed JSON at:
+## Architecture at a glance
 
 ```text
-data/<symbol.name>_daily.json
+                       Control plane
+              ┌─────────────────────────────┐
+              │ Dhan authentication          │
+              │ Instrument master             │
+              └──────────────┬──────────────┘
+                             │ credentials + instrument universe
+                             ▼
+                        Live data plane
+
+Dhan WebSocket ──> Feed gateway ──> Redis Stream (`ticks`) ──> Bar service ──> ClickHouse
+                       │                    │                    │               │
+                       │                    │                    │               └─ 1-minute live bars
+                       │                    │                    └─ event-time aggregation
+                       │                    └─ bounded replay / consumer hand-off
+                       └─ validation, normalization, reconnect
+
+Dhan Historical API ──> Daily-candle snapshot files
 ```
 
-Timestamps are retained as integer epoch values. Prices remain `f64`; volume and open interest are converted to integer values.
+## Data products and ownership
 
-### Operational characteristics
+| Product | Primary use | Current store | Lifecycle |
+| --- | --- | --- | --- |
+| Instrument master | Resolve tradable instruments and Dhan identifiers | Dhan scrip master; local CSV cache | Replaced on refresh; versioning is still required |
+| Historical daily candles | Research and backfill input | JSON snapshots today | Managed as files |
+| Live normalized ticks | Near-real-time processing and short replay | Redis Stream | Bounded by `TICKS_MAXLEN` |
+| Live one-minute bars | Analytics and downstream query workloads | ClickHouse | Long-term analytical storage |
 
-- Requests fail on non-success HTTP status codes.
-- A failed symbol currently stops the batch rather than being retried or skipped.
-- Files are replaced on each successful fetch.
-- The current implementation is a snapshot loader, not an incremental candle store.
+The ClickHouse bar schema can represent both historical and live bars. At present, live-derived bars are written there; historical daily snapshots are not yet loaded into ClickHouse.
 
-## Live market-data path: `feed/`
+## Core design decisions
 
-The `feed` module is responsible for receiving, decoding, and publishing Dhan's binary full-tick messages.
+### Use a single normalized tick stream
 
-### Subscription model
+All subscribed instruments are written to one Redis Stream, `ticks`, rather than one stream per security. This keeps consumer topology simple, establishes one ingestion order, and makes it easy to add consumers without managing a large number of Redis keys. Instrument identity remains part of every event, so consumers can partition or filter when needed.
 
-`feed::models` defines `Instrument` and `Subscription`, which serialize to Dhan's expected JSON subscription shape:
+The stream is capped approximately at a configurable length. This is a deliberate product decision: it provides a recovery window for live consumers without turning Redis into an unbounded raw-market-data archive. The correct value is driven by peak tick rate and the required recovery period.
 
-- `RequestCode` selects the feed request type.
-- `InstrumentCount` declares the number of instruments.
-- `InstrumentList` contains exchange segment and security ID pairs.
+### Treat event time as canonical
 
-The current example subscription in `main.rs` requests four NSE equity instruments using request code `21`.
+One-minute bars are assigned from Dhan's last-trade timestamp, not the time the application received the message. This keeps the bar aligned with market activity despite transport jitter or reconnects. Bars include OHLCV plus close-of-minute order-flow, top-of-book, depth, and open-interest features so research consumers do not need to reconstruct those signals from raw ticks.
 
-### Connection and reconnect: `feed/client.rs`
+### Separate ingest, aggregation, and storage
 
-`feed::run` builds the Dhan WebSocket URL using the access token and client ID, creates a Redis publisher, and enters a reconnecting receive loop.
+The feed gateway only validates, normalizes, and appends ticks. It does not perform database writes or analytics. The bar service owns event-time aggregation, and ClickHouse is the long-term analytical destination. This separation allows additional consumers—alerts, execution tooling, or alternate aggregations—to be added without changing the feed connection.
 
-Connection setup explicitly:
+### Keep the control plane explicit
 
-1. Resolves the Dhan hostname and selects an IPv4 address.
-2. Opens a TCP connection with a five-second timeout.
-3. Enables TCP no-delay.
-4. Establishes the TLS WebSocket with a five-second timeout.
-5. Sends the serialized subscription.
-6. Reads messages until the stream closes or errors.
+Authentication and the instrument master determine what the pipeline is permitted to request. The running live feed currently selects its instrument universe from the master-data tag `FNO`. Refreshing or versioning that universe is an operational control, not an implicit property of the feed process.
 
-Binary messages are treated as full packets and sent to the parser. Ping frames receive a matching Pong. Close frames and transport errors return control to the reconnect loop.
+### Preserve a simple local-first deployment model
 
-`feed/reconnect.rs` supplies exponential backoff: 2, 4, 8, 16, and 30-second delays, capped at 30 seconds. A successful connection resets the attempt counter.
+The current architecture requires the Rust services, Redis, and ClickHouse. It does not depend on a separate streaming platform. NATS JetStream or another durable event bus remains a future option if the product needs independent retention, cross-host fan-out, or stronger delivery guarantees than Redis can provide.
 
-### Binary decoding: `feed/parser.rs`
+## Processing behavior
 
-`parse_full` decodes the fixed 162-byte full-tick packet using little-endian fields. It validates the minimum packet size and requires response code `8`.
+### Live ticks
 
-The decoded `FullPacket` contains:
+The feed gateway establishes an authenticated Dhan WebSocket session, subscribes to the selected instruments, validates full-depth messages, and reconnects with capped exponential backoff after connection failures. It responds to WebSocket keep-alives and re-sends the subscription after reconnecting.
 
-- Packet metadata: response code, message length, exchange segment, and security ID.
-- Last-trade data: LTP, quantity, timestamp, average trade price, and volume.
-- Aggregate buy/sell quantities.
-- Open interest and its daily high/low.
-- Day OHLC values.
-- Five levels of bid/ask market depth.
+Each accepted message becomes a normalized tick containing the instrument key, trade fields, aggregate quantities, open interest, and five levels of market depth. Malformed messages are rejected rather than propagated.
 
-`parse_ticker` also supports the smaller 16-byte ticker format, although the active WebSocket path currently uses `parse_full` only.
+### One-minute bars
 
-### Redis publication: `feed/publisher.rs`
+The bar service reads the `ticks` stream through a Redis consumer group. It maintains one active minute window per instrument and emits the previous bar when it receives the first tick for a later minute. Cumulative volume is converted to incremental volume; if a cumulative counter resets, the reported last-trade quantity is used as a fallback.
 
-`RedisPublisher` connects to the local Redis instance at `redis://127.0.0.1/`. Each full tick is appended with `XADD` to a stream named:
+The service intentionally ignores out-of-order ticks from already-finalized minutes. This produces stable bars without retroactive correction, which is appropriate for the current live analytics product. It also means a bar for an inactive instrument is not emitted until a later tick arrives; there is no clock-driven idle-window close today.
 
-```text
-tick:<security_id>
-```
+### Analytical storage
 
-The stream entry stores scalar quote fields plus flattened depth fields such as `depth_0_bid_price`, `depth_0_ask_qty`, and so on for all five levels. Redis generates the stream entry ID with `*`.
+Completed live bars are queued and inserted into ClickHouse in batches. Batching is configurable by size and time interval; transient insert failures are retried with capped exponential backoff. The schema distinguishes historical from live rows and permits live-only microstructure fields to be absent in historical data.
 
-This gives each security an independent ordered event stream. `src/bin/tick_subscriber.rs` demonstrates a blocking `XREAD` consumer for `tick:4668`.
+## Delivery and recovery posture
 
-## End-to-end live flow
+The pipeline is designed for operationally useful recovery, not end-to-end exactly-once delivery.
 
-```text
-auth.rs
-  │ access token + client ID
-  ▼
-main.rs
-  │ Subscription
-  ▼
-feed/client.rs ──WebSocket──> Dhan
-  │ binary full packet
-  ▼
-feed/parser.rs
-  │ FullPacket
-  ▼
-feed/publisher.rs
-  │ XADD tick:<security_id>
-  ▼
-Redis Streams
-  │
-  └── tick_subscriber / future consumers
-```
-
-The historical and live paths share Dhan identifiers and authentication, but they do not currently converge in storage. Historical candles are files; live data is Redis stream data.
-
-## Data ownership and boundaries
-
-| Component | Responsibility | Output |
+| Boundary | Current posture | Implication |
 | --- | --- | --- |
-| `master.rs` | Refresh instrument metadata | `master.csv` |
-| `hdata.rs` | Fetch and normalize historical candles | `data/<symbol>_daily.json` |
-| `feed/client.rs` | Maintain WebSocket session and receive frames | Parsed-message input |
-| `feed/parser.rs` | Validate and decode binary frames | `FullPacket` / `TickerPacket` |
-| `feed/publisher.rs` | Convert full ticks to Redis stream entries | `tick:<security_id>` |
-| `feed/reconnect.rs` | Bound reconnect frequency | Retry delay |
-| `tick_subscriber.rs` | Example downstream reader | Console output |
+| Dhan to feed gateway | Reconnect and re-subscribe | Data during an upstream or credential outage may be missed. |
+| Feed gateway to Redis | Append to a bounded stream | Recent data can be replayed while retained; older ticks are deliberately discarded. Redis persistence must be configured for the desired crash durability. |
+| Redis to bar service | Consumer-group processing | A valid tick is acknowledged after it has been accepted by the in-process bar pipeline. A process failure can therefore lose acknowledged, not-yet-committed bars. |
+| Bar service to ClickHouse | Retried batch insert | Transient database outages stall and retry the in-memory batch; a process crash before a successful insert requires reconciliation because the source event may already be acknowledged. |
 
-## Current limitations and next pipeline layers
+This is sufficient for an early live analytics pipeline, but it is not a ledger or regulatory record. Consumers requiring authoritative tick history need a durable raw-event store and explicit replay/idempotency controls.
 
-The README identifies the following planned layers that are not yet implemented:
+## Operational decisions still required
 
-- NATS JetStream for broader event distribution.
-- Bar aggregation from ticks into time-based OHLCV data.
-- ClickHouse persistence for historical and live-derived data.
-- Analytics API access.
+Before treating the pipeline as production-critical, the following choices need owners and service-level objectives:
 
-Before adding those layers, the main production concerns are likely to be token refresh during long-running sessions, Redis stream retention and consumer groups, reconnect resubscription behavior, malformed-packet metrics, backpressure, and durable instrument-master versioning.
+- **Retention:** define the Redis replay window from peak throughput and recovery objectives; decide whether raw ticks also require long-term archival.
+- **Availability:** refresh credentials before expiry and define alerting for feed disconnects, stalled consumers, and ClickHouse retry loops.
+- **Bar completeness:** choose an idle-window close policy and whether late data may revise previously emitted bars.
+- **Scaling:** preserve per-instrument ordering when adding bar workers. A shared consumer group alone can distribute ticks for the same instrument across workers and fragment its bar state.
+- **Delivery semantics:** decide whether acknowledged-before-ClickHouse-commit loss is acceptable. If not, use durable hand-off, transactional/idempotent writes, and replay.
+- **Data governance:** version the instrument master and tick/bar schemas, retain provenance, and define how corrections are handled.
 
-## Running the current pipeline
+## Product boundary
 
-Start Redis locally:
-
-```bash
-docker run --name redis -p 6379:6379 redis:latest
-```
-
-Run the live producer:
-
-```bash
-cargo run --bin fts-rs
-```
-
-In another terminal, run the example stream reader:
-
-```bash
-cargo run --bin tick_subscriber
-```
-
-Historical loading and master-data refresh are currently exposed as Rust functions (`fetch_symbols` and `get_master`) and are not wired into the default `main.rs` execution path.
+This pipeline is an ingestion and market-data preparation layer. It does not make trading decisions, place orders, or expose an analytics API. Its purpose is to provide a dependable foundation on which those products can be built.

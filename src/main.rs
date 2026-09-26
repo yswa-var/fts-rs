@@ -38,9 +38,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // fetch_symbols(&client, &access_token, &symbols).await?;
 
-    let instruments = master::instruments_for_tag("FNO")?;
+    let instruments = master::instruments_for_tag("GOLD")?;
     if instruments.is_empty() {
-        return Err("no instruments found for tag FNO".into());
+        return Err("no instruments found for tag GOLD".into());
     }
 
     let subscription = Subscription {

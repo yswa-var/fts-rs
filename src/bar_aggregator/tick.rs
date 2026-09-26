@@ -1,4 +1,4 @@
-use redis::{from_redis_value, RedisResult, Value};
+use redis::{RedisResult, Value, from_redis_value};
 use std::collections::HashMap;
 
 /// The subset of a Redis `ticks` stream entry needed to construct a live bar.
