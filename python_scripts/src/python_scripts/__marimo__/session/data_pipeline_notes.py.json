@@ -1,0 +1,106 @@
+{
+  "version": "1",
+  "metadata": {
+    "marimo_version": "0.25.1",
+    "script_metadata_hash": "2234032dc616ad82d42f3130c7c7c97a"
+  },
+  "cells": [
+    {
+      "id": "Hbol",
+      "code_hash": "fdc4fdc3fdb49a3efbdc5f2249eb683e",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "MJUe",
+      "code_hash": "9a6b31ed1f9009e2290cc85ff96ee9a5",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "vblA",
+      "code_hash": "53e0148490c05a8747a5376265e031db",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h1 id=\"fts-rs-market-data-pipeline-notes\">fts-rs market-data pipeline notes</h1>\n<span class=\"paragraph\">The live path is:</span>\n<span class=\"paragraph\"><strong>Dhan WebSocket \u2192 Rust feed gateway \u2192 Redis Stream (<code>ticks</code>) \u2192 Rust\nbar aggregator \u2192 ClickHouse (<code>bars_1m</code>)</strong></span>\n<span class=\"paragraph\">The historical path is separate:</span>\n<span class=\"paragraph\"><strong>Dhan historical API \u2192 historical worker \u2192 ClickHouse (<code>bar_1m</code> or\n<code>bar_daily</code>)</strong></span>\n<span class=\"paragraph\">Long-running services are shown as commands but are not started\nautomatically when this notebook opens. Run them in separate terminals\nso the feed, aggregator, and optional UI can run at the same time.</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "bkHC",
+      "code_hash": "1ea1e111384a240470554c64491288d1",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "lEQa",
+      "code_hash": "cfd9b1e4a901c71b5f2a08b314036d1f",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "application/json": "[\"text/html:<marimo-ui-element object-id='lEQa-0' random-id='1f638b32-72e3-9d10-c91f-cae688300f0b'><marimo-dropdown data-initial-value='[&quot;1. Check Rust targets&quot;]' data-label='&quot;&#92;u003cspan class=&#92;&quot;markdown prose dark:prose-invert contents&#92;&quot;&#92;u003e&#92;u003cspan class=&#92;&quot;paragraph&#92;&quot;&#92;u003eCommand&#92;u003c/span&#92;u003e&#92;u003c/span&#92;u003e&quot;' data-options='[&quot;1. Check Rust targets&quot;,&quot;2. Start Redis&quot;,&quot;3. Start ClickHouse&quot;,&quot;4. Run live feed producer&quot;,&quot;5. Run live bar aggregator&quot;,&quot;6. Run live tick browser&quot;,&quot;7. Run historical worker&quot;,&quot;8. Backfill daily candles&quot;,&quot;9. Backfill one-minute candles&quot;,&quot;10. Check ClickHouse health&quot;]' data-allow-select-none='false' data-searchable='false' data-full-width='false' data-disabled='false'></marimo-dropdown></marimo-ui-element>\", \"text/html:<marimo-ui-element object-id='lEQa-1' random-id='15cd1280-a565-e00f-1fbf-a636315e288d'><marimo-button data-initial-value='0' data-label='&quot;&#92;u003cspan class=&#92;&quot;markdown prose dark:prose-invert contents&#92;&quot;&#92;u003e&#92;u003cspan class=&#92;&quot;paragraph&#92;&quot;&#92;u003eRun selected command&#92;u003c/span&#92;u003e&#92;u003c/span&#92;u003e&quot;' data-kind='&quot;neutral&quot;' data-disabled='false' data-full-width='false'></marimo-button></marimo-ui-element>\"]"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "PKri",
+      "code_hash": "2dfde4a82cb24be303e717609ed48951",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "application/json": "[\"text/markdown:<span class=\\\"markdown prose dark:prose-invert contents\\\"><span class=\\\"paragraph\\\"><strong>Working directory:</strong> <code>/home/barakha/Documents/fts-rs</code><br />\\n<strong>Mode:</strong> <code>one-shot</code><br />\\n<strong>Command:</strong> <code>cargo check --all-targets</code><br />\\n<strong>Purpose:</strong> Compile-checks the feed, bar aggregator, and historical worker.</span></span>\", \"text/markdown:<span class=\\\"markdown prose dark:prose-invert contents\\\"><span class=\\\"paragraph\\\">Select a command and press <strong>Run selected command</strong>.</span></span>\"]"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "Xref",
+      "code_hash": "6d339791e584dc4022d42db22c3a5dc7",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h2 id=\"operational-notes\">Operational notes</h2>\n<ul>\n<li>Set <code>CLIENT_ID</code>, <code>TOTP_KEY</code>, and <code>DPIN</code> in <code>.env</code> before starting Dhan-backed services.</li>\n<li>Keep <code>master.csv</code> in the repository root; it resolves security IDs and selects the live universe.</li>\n<li>Redis retains a bounded replay window controlled by <code>TICKS_MAXLEN</code> (default <code>750000</code>).</li>\n<li>The live aggregator closes a minute when the first tick from a later event-time minute arrives.</li>\n<li>Acknowledged Redis entries are not a permanent raw-tick archive; configure Redis persistence if crash recovery matters.</li>\n<li><code>run-live.sh</code> is a convenience alternative, but it assumes Docker containers and starts the feed plus bar aggregator together.</li>\n</ul></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "RIyN",
+      "code_hash": null,
+      "outputs": [],
+      "console": []
+    }
+  ]
+}

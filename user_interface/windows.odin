@@ -12,9 +12,11 @@ is_second_window_mode :: proc(args: []string) -> bool {
 launch_second_window :: proc() {
 	// raylib owns one window/context per process, so use a child process for
 	// the second independent window.
-	_, _ := os.process_start(os.Process_Desc{
+	process, err := os.process_start(os.Process_Desc{
 		command = []string{os.args[0], SECOND_WINDOW_ARGUMENT},
 	})
+	_ = process
+	_ = err
 }
 
 run_second_window :: proc() {

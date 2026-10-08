@@ -1,0 +1,19 @@
+[project]
+name = "python-scripts"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "yswa", email = "yswa.var@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "marimo>=0.25.1",
+]
+
+[project.scripts]
+python-scripts = "python_scripts:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
